@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.uber.org/zap"
 	"io"
 	"log"
 	"mime/multipart"
@@ -22,6 +23,12 @@ type Parse struct {
 }
 
 func NewLlamaParse(textDirectory, imageDirectory, llamaApiKey string) *Parse {
+	if err := os.MkdirAll(textDirectory, os.ModePerm); err != nil {
+		log.Panicf("Error creating text directory: %v", err)
+	}
+	if err := os.MkdirAll(imageDirectory, os.ModePerm); err != nil {
+		log.Panicf("Error creating image directory: %v", err)
+	}
 	return &Parse{
 		textDirectory:  textDirectory,
 		imageDirectory: imageDirectory,
@@ -34,7 +41,8 @@ func (l *Parse) Parse(ctx context.Context, filePath string) error {
 	if err != nil {
 		return err
 	}
-	l.monitorFile(ctx, response, filePath)
+	filename := filepath.Base(filePath)
+	l.monitorFile(ctx, response, filename)
 	return nil
 }
 
@@ -52,14 +60,15 @@ func (l *Parse) monitorFile(ctx context.Context, response *StatusResponse, fileP
 		if err != nil {
 			errorCount++
 			if errorCount > 5 {
-				log.Fatalf("Error getting job status: %v", err)
+				zap.L().Fatal("Error getting job status", zap.Error(err))
 			}
 			time.Sleep(5 * time.Second)
 		}
+		zap.L().Debug("Job status", zap.String("status", status.Status))
 
 		switch status.Status {
 		case "SUCCESS", "PARTIAL_SUCCESS":
-			l.readFile(ctx, response, l.textDirectory, filePath)
+			l.readFile(ctx, response, filePath)
 			return
 		case "ERROR":
 			log.Printf("Job %s failed with error: %s", response.Id, status.ErrorMessage)
@@ -70,7 +79,8 @@ func (l *Parse) monitorFile(ctx context.Context, response *StatusResponse, fileP
 	}
 }
 
-func (l *Parse) readFile(ctx context.Context, response *StatusResponse, textDir string, doc string) {
+func (l *Parse) readFile(ctx context.Context, response *StatusResponse, doc string) {
+
 	result, err := l.getJobResultText(response.Id, "raw/text")
 	if err != nil {
 		log.Fatalf("Error getting job result: %v", err)
@@ -115,6 +125,11 @@ func (l *Parse) images(ctx context.Context, response *StatusResponse, result str
 }
 
 func (l *Parse) downloadImage(ctx context.Context, id string, name string, img LlamaImage) {
+	imagePath := filepath.Join(l.imageDirectory, name)
+	if err := os.MkdirAll(imagePath, os.ModePerm); err != nil {
+		log.Fatalf("Error creating image directory: %v", err)
+	}
+
 	url := fmt.Sprintf("https://api.cloud.llamaindex.ai/api/parsing/job/%s/result/image/%s", id, img.Name)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -141,7 +156,7 @@ func (l *Parse) downloadImage(ctx context.Context, id string, name string, img L
 	if err != nil {
 		log.Fatalf("Error reading image file: %v", err)
 	}
-	err = os.WriteFile(filepath.Join(l.imageDirectory, name, img.Name), b, 0644)
+	err = os.WriteFile(filepath.Join(imagePath, img.Name), b, 0644)
 	if err != nil {
 		log.Panicf("Error saving image file: %v", err)
 	}

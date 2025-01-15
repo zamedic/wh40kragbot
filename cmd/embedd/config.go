@@ -1,11 +1,11 @@
 package embedd
 
 type pdfEmbeddingConfig struct {
-	Rules   []pdfEmbedding `yaml:"rules"`
-	Indexes []pdfEmbedding `yaml:"indexes"`
+	Rules   []PdfEmbedding `yaml:"rules"`
+	Indexes []PdfEmbedding `yaml:"indexes"`
 }
 
-type pdfEmbedding struct {
+type PdfEmbedding struct {
 	Title string `yaml:"title"`
 	Url   string `yaml:"url"`
 }
