@@ -36,14 +36,14 @@ func NewLlamaParse(textDirectory, imageDirectory, llamaApiKey string) *Parse {
 	}
 }
 
-func (l *Parse) Parse(ctx context.Context, filePath string) error {
+func (l *Parse) Parse(ctx context.Context, filePath string) (*LlamaParse, error) {
 	response, err := l.uploadFile(ctx, filePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	filename := filepath.Base(filePath)
-	l.monitorFile(ctx, response, filename)
-	return nil
+	return l.monitorFile(ctx, response, filename)
+
 }
 
 func (l *Parse) Resume(ctx context.Context, jobId, fileName string) {
@@ -53,7 +53,7 @@ func (l *Parse) Resume(ctx context.Context, jobId, fileName string) {
 	l.monitorFile(ctx, s, fileName)
 }
 
-func (l *Parse) monitorFile(ctx context.Context, response *StatusResponse, filePath string) {
+func (l *Parse) monitorFile(ctx context.Context, response *StatusResponse, filePath string) (*LlamaParse, error) {
 	for {
 		errorCount := 0
 		status, err := getJobStatus(response.Id, l.llamaApiKey)
@@ -68,18 +68,18 @@ func (l *Parse) monitorFile(ctx context.Context, response *StatusResponse, fileP
 
 		switch status.Status {
 		case "SUCCESS", "PARTIAL_SUCCESS":
-			l.readFile(ctx, response, filePath)
-			return
+			return l.readFile(ctx, response, filePath)
 		case "ERROR":
-			log.Printf("Job %s failed with error: %s", response.Id, status.ErrorMessage)
-			return
+			zap.L().Error("Error processing file", zap.String("error_code", status.ErrorCode), zap.String("error_message", status.ErrorMessage))
+			return nil, fmt.Errorf("error processing file: %s", status.ErrorMessage)
 		default:
 			time.Sleep(5 * time.Second)
 		}
 	}
+	return nil, nil
 }
 
-func (l *Parse) readFile(ctx context.Context, response *StatusResponse, doc string) {
+func (l *Parse) readFile(ctx context.Context, response *StatusResponse, doc string) (*LlamaParse, error) {
 
 	result, err := l.getJobResultText(response.Id, "raw/text")
 	if err != nil {
@@ -108,15 +108,17 @@ func (l *Parse) readFile(ctx context.Context, response *StatusResponse, doc stri
 		log.Fatalf("Error writing result to file: %v", err)
 	}
 
-	l.images(ctx, response, result, doc)
-}
-
-func (l *Parse) images(ctx context.Context, response *StatusResponse, result string, doc string) {
 	ls := &LlamaParse{}
-	err := json.Unmarshal([]byte(result), ls)
+	err = json.Unmarshal([]byte(result), ls)
 	if err != nil {
 		log.Fatalf("Error unmarshalling json: %v", err)
 	}
+	l.images(ctx, response, ls, doc)
+	return ls, err
+
+}
+
+func (l *Parse) images(ctx context.Context, response *StatusResponse, ls *LlamaParse, doc string) {
 	for _, page := range ls.Pages {
 		for _, img := range page.Images {
 			l.downloadImage(ctx, response.Id, doc, img)

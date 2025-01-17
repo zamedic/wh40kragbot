@@ -4,12 +4,15 @@ import (
 	"context"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/tmc/langchaingo/llms/ollama"
+	"github.com/tmc/langchaingo/textsplitter"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"wh40k/internal/db"
 	"wh40k/internal/llama"
 )
 
@@ -85,10 +88,70 @@ func pdfEmbed(cmd *cobra.Command, args []string) {
 
 func process(ctx context.Context, index PdfEmbedding) error {
 	//Download the PDF
+	zap.L().Debug("downloading PDF", zap.String("url", index.Url))
+	pdfPath, err := downloadFile(index)
+	if err != nil {
+		return err
+	}
+
+	//OCR the PDF
+	zap.L().Debug("parsing PDF", zap.String("path", pdfPath))
+	pages, err := llamaClient.Parse(ctx, pdfPath)
+	if err != nil {
+		zap.L().Error("error parsing PDF", zap.Error(err))
+		return err
+	}
+
+	//Embed the text
+	zap.L().Debug("embedding text")
+	llm, err := ollama.New(ollama.WithModel("nomic-embed-text"))
+	if err != nil {
+		zap.L().Error("error creating LLM", zap.Error(err))
+		return err
+	}
+
+	splitter := textsplitter.NewRecursiveCharacter()
+
+	for _, page := range pages.Pages {
+		texts, err := splitter.SplitText(page.Md)
+		if err != nil {
+			zap.L().Error("error splitting text", zap.Error(err))
+			return err
+		}
+		tokens, err := llm.CreateEmbedding(ctx, texts)
+		if err != nil {
+			zap.L().Error("error creating embedding", zap.Error(err))
+			return err
+		}
+
+		embeddings := make([]*db.Embedding, len(tokens))
+
+		for x, token := range tokens {
+			embeddings[x] = &db.Embedding{
+				Vector:   token,
+				Page:     page.Page,
+				Document: index.Title,
+				Index:    x,
+			}
+		}
+
+		_, err = db.MongoViper(ctx).Database("wh40k").Collection("embeddings").InsertMany(ctx, []interface{}{embeddings})
+		if err != nil {
+			zap.L().Error("error inserting embeddings", zap.Error(err))
+			return err
+		}
+
+	}
+
+	return nil
+
+}
+
+func downloadFile(index PdfEmbedding) (string, error) {
 	response, err := http.DefaultClient.Get(index.Url)
 	if err != nil {
 		zap.L().Error("error downloading PDF", zap.Error(err))
-		return err
+		return "", err
 	}
 	defer response.Body.Close()
 
@@ -97,26 +160,17 @@ func process(ctx context.Context, index PdfEmbedding) error {
 	pdfFile, err := os.Create(pdfPath)
 	if err != nil {
 		zap.L().Error("error creating PDF", zap.Error(err))
-		return err
+		return "", err
 	}
 	_, err = io.Copy(pdfFile, response.Body)
 	if err != nil {
 		zap.L().Error("error saving PDF", zap.Error(err))
-		return err
+		return "", err
 	}
 	err = pdfFile.Close()
 	if err != nil {
 		zap.L().Error("error closing PDF", zap.Error(err))
-		return err
+		return "", err
 	}
-
-	//OCR the PDF
-	err = llamaClient.Parse(ctx, pdfPath)
-	if err != nil {
-		zap.L().Error("error parsing PDF", zap.Error(err))
-		return err
-	}
-
-	return nil
-
+	return pdfPath, nil
 }

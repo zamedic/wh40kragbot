@@ -39,7 +39,11 @@ func init() {
 	setupZap()
 	cobra.OnInitialize(initConfig)
 
+	rootCmd.PersistentFlags().String("mongo-url", "mongodb://localhost:27017", "MongoDB URL")
+	viper.BindPFlag("mongo-url", rootCmd.PersistentFlags().Lookup("mongo-url"))
+
 	rootCmd.AddCommand(embedd.PDFEmbedding)
+
 }
 
 func setupZap() {
